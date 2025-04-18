@@ -5,41 +5,50 @@ import torch
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torchvision.utils import save_image
 
 from modules import VAE
+from data import TinyImagenet
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = 512
 N_EPOCHS = 100
-PRINT_INTERVAL = 500
-DATASET = 'FashionMNIST'  # CIFAR10 | MNIST | FashionMNIST
-NUM_WORKERS = 4
+PRINT_INTERVAL = 100
+NUM_WORKERS = 8
 
-INPUT_DIM = 1
-DIM = 256
+INPUT_DIM = 3
+DIM = 64
 Z_DIM = 128
-LR = 1e-3
+LR = 1e-4
 
 
-preproc_transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-])
+preproc_transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+)
+train_dataset = TinyImagenet(
+    train=True,
+    valid=False,
+    transform=preproc_transform,
+)
 train_loader = torch.utils.data.DataLoader(
-    eval('datasets.'+DATASET)(
-        '../data/{}/'.format(DATASET), train=True, download=True,
-        transform=preproc_transform,
-    ), batch_size=BATCH_SIZE, shuffle=False,
-    num_workers=NUM_WORKERS, pin_memory=True
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=NUM_WORKERS,
+    pin_memory=True,
+)
+test_dataset = TinyImagenet(
+    train=False,
+    valid=True,
+    transform=preproc_transform,
 )
 test_loader = torch.utils.data.DataLoader(
-    eval('datasets.'+DATASET)(
-        '../data/{}/'.format(DATASET), train=False,
-        transform=preproc_transform
-    ), batch_size=BATCH_SIZE, shuffle=False,
-    num_workers=NUM_WORKERS, pin_memory=True
+    test_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=NUM_WORKERS,
+    pin_memory=True,
 )
 
 model = VAE(INPUT_DIM, DIM, Z_DIM).cuda()
@@ -55,8 +64,8 @@ def train():
         x = x.cuda()
 
         x_tilde, kl_d = model(x)
-        loss_recons = F.mse_loss(x_tilde, x, size_average=False) / x.size(0)
-        loss = loss_recons + kl_d
+        loss_recons = F.mse_loss(x_tilde, x, reduction="mean")
+        loss = loss_recons + kl_d * 0.001
 
         nll = -Normal(x_tilde, torch.ones_like(x_tilde)).log_prob(x)
         log_px = nll.mean().item() - np.log(128) + kl_d.item()
@@ -69,12 +78,15 @@ def train():
         train_loss.append([log_px, loss.item()])
 
         if (batch_idx + 1) % PRINT_INTERVAL == 0:
-            print('\tIter [{}/{} ({:.0f}%)]\tLoss: {} Time: {:5.3f} ms/batch'.format(
-                batch_idx * len(x), len(train_loader.dataset),
-                PRINT_INTERVAL * batch_idx / len(train_loader),
-                np.asarray(train_loss)[-PRINT_INTERVAL:].mean(0),
-                1000 * (time.time() - start_time)
-            ))
+            print(
+                "\tIter [{}/{} ({:.0f}%)]\tLoss: {} Time: {:5.3f} ms/batch".format(
+                    batch_idx * len(x),
+                    len(train_loader.dataset),
+                    PRINT_INTERVAL * batch_idx / len(train_loader),
+                    np.asarray(train_loss)[-PRINT_INTERVAL:].mean(0),
+                    1000 * (time.time() - start_time),
+                )
+            )
 
 
 def test():
@@ -85,31 +97,28 @@ def test():
         for batch_idx, (x, _) in enumerate(test_loader):
             x = x.cuda()
             x_tilde, kl_d = model(x)
-            loss_recons = F.mse_loss(x_tilde, x, size_average=False) / x.size(0)
+            loss_recons = F.mse_loss(x_tilde, x, reduction="mean")
             loss = loss_recons + kl_d
             val_loss.append(loss.item())
 
-    print('\nValidation Completed!\tLoss: {:5.4f} Time: {:5.3f} s'.format(
-        np.asarray(val_loss).mean(0),
-        time.time() - start_time
-    ))
+    print(
+        "\nValidation Completed!\tLoss: {:5.4f} Time: {:5.3f} s".format(
+            np.asarray(val_loss).mean(0), time.time() - start_time
+        )
+    )
     return np.asarray(val_loss).mean(0)
 
 
 def generate_reconstructions():
     model.eval()
-    x, _ = test_loader.__iter__().next()
+    x, _ = next(iter(test_loader))
     x = x[:32].cuda()
     x_tilde, kl_div = model(x)
 
     x_cat = torch.cat([x, x_tilde], 0)
     images = (x_cat.cpu().data + 1) / 2
 
-    save_image(
-        images,
-        'samples/vae_reconstructions_{}.png'.format(DATASET),
-        nrow=8
-    )
+    save_image(images, "samples/vae_reconstructions.png", nrow=8)
 
 
 def generate_samples():
@@ -119,11 +128,7 @@ def generate_samples():
 
     images = (x_tilde.cpu().data + 1) / 2
 
-    save_image(
-        images,
-        'samples/vae_samples_{}.png'.format(DATASET),
-        nrow=8
-    )
+    save_image(images, "samples/vae_samples.png", nrow=8)
 
 
 BEST_LOSS = 99999
@@ -137,7 +142,7 @@ for epoch in range(1, N_EPOCHS):
         BEST_LOSS = cur_loss
         LAST_SAVED = epoch
         print("Saving model!")
-        torch.save(model.state_dict(), 'models/{}_vae.pt'.format(DATASET))
+        torch.save(model.state_dict(), "models/vae.pt")
     else:
         print("Not saving model! Last saved: {}".format(LAST_SAVED))
 

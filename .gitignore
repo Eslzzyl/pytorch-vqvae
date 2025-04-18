@@ -112,3 +112,6 @@ models/
 
 # Slurm
 *.out
+
+dataset/
+samples/
