@@ -42,6 +42,8 @@ class VAE(nn.Module):
         )
 
         self.decoder = nn.Sequential(
+            # ConvTranspose2d 的主要作用是 增加特征图的空间维度（高度和宽度），同时减少或保持通道数。
+            # 这与标准的 Conv2d 操作相反，后者通常会减少空间维度并增加通道数。
             nn.ConvTranspose2d(z_dim, dim, 3, 1, 0),
             nn.BatchNorm2d(dim),
             nn.ReLU(True),
@@ -58,12 +60,25 @@ class VAE(nn.Module):
         self.apply(weights_init)
 
     def forward(self, x):
+        # mu 代表潜在分布的均值（mean）
+        # logvar 代表潜在分布的对数方差（log variance）。使用对数方差而不是直接使用方差或标准差，是为了确保方差始终为正，并且在训练过程中更稳定。
+        # .chunk(2, dim=1) 将输入沿着维度 1（通常是特征维度）分割成两个相等的部分。
         mu, logvar = self.encoder(x).chunk(2, dim=1)
 
+        # q(z|x) 代表给定输入 x 的潜在变量 z 的后验分布
+        # 分布的标准差（standard deviation）是通过 logvar.mul(0.5).exp() 计算得到的。
+        # 这相当于计算 exp(0.5 * logvar)，也就是 sqrt(exp(logvar))，即 sqrt(variance)，从而得到标准差。
         q_z_x = Normal(mu, logvar.mul(0.5).exp())
+        # p(z) 代表潜在变量 z 的先验分布
+        # 在 VAE 中，先验分布通常被设定为一个标准正态分布，即均值为 0，方差为 1 的分布。
         p_z = Normal(torch.zeros_like(mu), torch.ones_like(logvar))
+        # KL 散度衡量了两个概率分布之间的差异。在 VAE 中，我们希望近似后验分布接近先验分布
+        # 计算出的 KL 散度是一个张量，其形状通常是 (batch_size, latent_dim)
+        # .sum(1) 将 KL 散度沿着潜在变量的维度（维度 1）求和。这为批次中的每个样本计算了一个总的 KL 散度值，结果张量的形状变为 (batch_size,)
+        # .mean() 计算了批次中所有样本的 KL 散度的平均值，得到一个标量值。这个值通常作为 VAE 损失函数的一部分，用于正则化潜在空间
         kl_div = kl_divergence(q_z_x, p_z).sum(1).mean()
 
+        # resample() 从近似后验分布 q_z_x 中采样一个潜在向量 z。
         x_tilde = self.decoder(q_z_x.rsample())
         return x_tilde, kl_div
 
